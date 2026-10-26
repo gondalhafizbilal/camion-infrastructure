@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template has the capability to create all required resources for a Terraform backend. This includes a KMS key, DyanmoDB Table and S3 bucket with versioning and encryption enabled.
+
+Parameters:
+  # Terraform
+
+  kmsKeyName:
+    Type: String
+    Description: Alias created for KMS key
+
+  dynamodbTableName:
+    Type: String
+    Description: Table used for Terraform state locking
+
+  # Tagging
+  environmentTag:
+    Type: String
+    Description: Environment for default resource tagging
+    Default: dev
+    AllowedValues:
+      - dev
+      - qa
+      - uat
+      - prod
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterLabels:
+      kmsKeyName:
+        default: KMS Key Alias
+      dynamodbTableName:
+        default: DynamoDB Table Name
+      environmentTag:
+        default: Environment Tag
+
+    ParameterGroups:
+      - Label:
+          default: Terraform Backend Settings
+        Parameters:
+          - kmsKeyName
+          - dynamodbTableName
+      - Label:
+          default: Tagging
+        Parameters:
+          - environmentTag
+
+Resources:
+  tfKms:
+    Type: AWS::KMS::Key
+    Properties:
+      Enabled: true
+      EnableKeyRotation: true
+      Description: KMS Key for TF state encryption
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: !Sub tf-${AWS::AccountId}-${AWS::Region}
+        Statement:
+          - Effect: Allow
+            Action: kms:*
+            Resource: '*'
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Sid: IAM Key Control
+      Tags:
+        - Key: controlled-by
+          Value: !Sub cloudformation-${AWS::StackName}
+        - Key: environment
+          Value: !Ref environmentTag
+
+  tfKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      TargetKeyId: !Ref tfKms
+      AliasName: !Sub alias/${kmsKeyName}
+
+  tfS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref tfKms
+      Tags:
+        - Key: controlled-by
+          Value: !Sub cloudformation-${AWS::StackName}
+        - Key: environment
+          Value: !Ref environmentTag
+
+  # tfS3BucketPolicy:
+  #   Type: AWS::S3::BucketPolicy
+  #   Properties:
+  #     Bucket: !Ref tfS3Bucket
+  #     PolicyDocument:
+  #       Statement:
+  #         - Action:
+  #             - s3:PutObject
+  #           Effect: Deny
+  #           Resource:
+  #             - !Sub arn:aws:s3:::${tfS3Bucket}/*
+  #           Principal: '*'
+  #           Condition:
+  #             StringNotEquals:
+  #               s3:x-amz-server-side-encryption-aws-kms-key-id:
+  #                 - !Ref tfKms
+
+  tfDynamodb:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref dynamodbTableName
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      Tags:
+        - Key: controlled-by
+          Value: !Sub cloudformation-${AWS::StackName}
+        - Key: environment
+          Value: !Ref environmentTag
+
+Outputs:
+  tfKmsArn:
+    Value: !GetAtt tfKms.Arn
+    Description: TF Backend KMS Key ARN
+
+  tfS3Bucket:
+    Value: !Ref tfS3Bucket
+    Description: TF Backend S3 bucket
+
+  tfDynamodbTable:
+    Value: !Ref dynamodbTableName
+    Description: TF Backend DynamoDB Table
